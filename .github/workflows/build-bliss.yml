@@ -1,45 +1,48 @@
 name: Build Zenith Kernel for Surface
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许你在 GitHub 页面上手动点击 "Run workflow"
 
 jobs:
   build-kernel:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 获取内核源码
+      - name: 1. 拉取内核源码
         uses: actions/checkout@v4
         with:
           path: kernel-source
 
-      - name: 2. 安装内核编译工具
+      - name: 2. 安装 2026 编译必备环境
         run: |
           sudo apt update
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: 3. 集成 KernelSU (手动创建目录并克隆)
-        # 放弃使用 checkout 插件的 path 属性，改用命令行以确保目录树正确生成
+      - name: 3. 集成 KernelSU (暴力清理并重克隆)
         run: |
           cd kernel-source
-          mkdir -p drivers/kernelsu
-          # 使用 --depth 1 提高 2026 年网络环境下 Actions 的拉取成功率
+          # 强制清理旧残留，解决 File exists 报错
+          rm -rf drivers/kernelsu
+          
+          # 手动拉取源码
           git clone --depth 1 github.com drivers/kernelsu
           
-          # 验证文件是否进入正确目录
-          if [ ! -f "drivers/kernelsu/Kconfig" ]; then echo "KernelSU 源码缺失"; exit 1; fi
-
-          # 自动修补引用
-          if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig; then
-            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          fi
-          if ! grep -q "kernelsu/" drivers/Makefile; then
-            echo 'obj-y += kernelsu/' >> drivers/Makefile
+          # 检查克隆是否成功
+          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
+            echo "KernelSU 源码获取失败，请检查网络。"
+            exit 1
           fi
 
-      - name: 4. 配置并开启驱动
+          # 自动插入引用 (带去重逻辑)
+          grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          grep -q "kernelsu/" drivers/Makefile || echo 'obj-y += kernelsu/' >> drivers/Makefile
+
+      - name: 4. 自动化内核配置
         working-directory: kernel-source
         run: |
+          # 生成基础配置
           make x86_64_defconfig
+          
+          # 开启 Surface 驱动及 KernelSU
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
@@ -48,25 +51,31 @@ jobs:
                            --enable CONFIG_SURFACE_GPE \
                            --enable CONFIG_SURFACE_SAM \
                            --enable CONFIG_KSU
-          # 2026 编译规范：必须执行 olddefconfig 处理 Kconfig 变动
+          
+          # 2026 标准：同步并检查配置依赖
           make olddefconfig
 
-      - name: 5. 编译内核
+      - name: 5. 执行多线程编译
         working-directory: kernel-source
         run: |
+          # 使用所有可用 CPU 核心进行加速
           make bzImage -j$(nproc)
           make modules -j$(nproc)
 
-      - name: 6. 整理并打包产物
+      - name: 6. 提取并打包编译产物
         run: |
           mkdir -p output/modules_install
+          # 拷贝内核镜像
           cp kernel-source/arch/x86/boot/bzImage output/kernel
+          # 拷贝驱动模块
           cd kernel-source
           make INSTALL_MOD_PATH=../output/modules_install modules_install
-          cd ../output && tar -czvf surface_modules.tar.gz modules_install
+          # 打包模块
+          cd ../output
+          tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 7. 上传产物
+      - name: 7. 发布产物
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Zenith-Kernel-Package
+          name: Surface-Zenith-Kernel-With-KSU
           path: output/
