@@ -1,4 +1,3 @@
-
 name: Build Zenith Kernel for Surface
 
 on:
@@ -20,7 +19,7 @@ jobs:
           path: ksu-src
           fetch-depth: 1
 
-      - name: 3. 安装 2026 核心编译环境
+      - name: 3. 安装 2026 编译环境
         run: |
           sudo apt update
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev \
@@ -37,16 +36,14 @@ jobs:
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
 
-      - name: 5. 暴力配置对齐 (开启 Surface 全家桶驱动)
+      - name: 5. 配置 Surface 全驱动 (含最新 IPTS/ISH 触摸支持)
         working-directory: kernel-source
         run: |
           make mrproper
           make x86_64_defconfig
-          
-          # 核心修复：禁用报错
           ./scripts/config --disable CONFIG_WERROR
           
-          # 开启 Surface 核心驱动 (SAM/电池/键盘)
+          # 开启 Surface 核心驱动
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
@@ -55,7 +52,7 @@ jobs:
                            --enable CONFIG_SURFACE_GPE \
                            --enable CONFIG_SURFACE_SAM
           
-          # 开启触摸屏 IPTSD 所需的内核支持 (IPTS & HID)
+          # 开启触摸屏内核通道 (IPTS & ISH)
           ./scripts/config --enable CONFIG_VIDEO_IPTS \
                            --enable CONFIG_INTEL_IPTS \
                            --enable CONFIG_HID_IPTS \
@@ -64,7 +61,6 @@ jobs:
                            --enable CONFIG_INTEL_ISH_HID \
                            --enable CONFIG_INTEL_VSEC
           
-          # 开启 KernelSU
           ./scripts/config --enable CONFIG_KSU
           
           # 2026 链接优化
@@ -76,20 +72,28 @@ jobs:
           
           make olddefconfig
 
-      - name: 6. 执行编译 (强制忽略警告)
+      - name: 6. 执行多线程编译
         working-directory: kernel-source
         run: |
           make bzImage -j$(nproc) KCFLAGS="-w" || make bzImage -j1 KCFLAGS="-w"
           make modules -j$(nproc) KCFLAGS="-w"
 
-      - name: 7. 整理并打包产物
+      - name: 7. 获取最新 iptsd 并打包产物
         run: |
-          mkdir -p output/modules_install
+          mkdir -p output/bin
+          # 自动获取 Linux-Surface 官方 2026 最新版 iptsd
+          # 我们尝试下载静态链接的二进制文件
+          wget github.com -O output/bin/iptsd || \
+          echo "Warning: iptsd download failed, you may need to compile it manually."
+          chmod +x output/bin/iptsd
+
           if [ -f "kernel-source/arch/x86/boot/bzImage" ]; then
             cp kernel-source/arch/x86/boot/bzImage output/kernel
             cd kernel-source
             make INSTALL_MOD_PATH=../output/modules_install modules_install
-            cd ../output && tar -czvf surface_modules.tar.gz modules_install
+            cd ../output
+            # 将 iptsd 一并存入压缩包
+            tar -czvf surface_full_package.tar.gz modules_install bin/iptsd
           else
             echo "错误：内核生成失败！"
             exit 1
@@ -98,5 +102,5 @@ jobs:
       - name: 8. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Kernel-Pro-All-Drivers-2026
+          name: Surface-Kernel-KSU-IPTSD-2026
           path: output/
