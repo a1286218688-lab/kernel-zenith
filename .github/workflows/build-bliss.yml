@@ -78,7 +78,7 @@ jobs:
       - name: 7. 获取 iptsd 并打包
         run: |
           mkdir -p output/bin
-          wget github.com -O output/bin/iptsd
+          wget https://github.com/linux-surface/iptsd/releases/latest/download/iptsd -O output/bin/iptsd
           chmod +x output/bin/iptsd
 
           if [ -f "kernel-source/arch/x86/boot/bzImage" ]; then
