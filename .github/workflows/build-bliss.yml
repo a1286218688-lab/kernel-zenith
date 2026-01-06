@@ -1,4 +1,5 @@
-name: Build Slim Universal Surface Kernel
+
+name: Build Stable Slim Surface Kernel
 
 on:
   workflow_dispatch:
@@ -36,79 +37,78 @@ jobs:
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
 
-      - name: 5. 配置全机型兼容驱动并瘦身
+      - name: 5. 核心驱动补全与体积瘦身 (修正版)
         working-directory: kernel-source
         run: |
           make mrproper
           make x86_64_defconfig
           
-          # --- A. 极致瘦身：禁用调试符号 (减小体积 90%) ---
+          # --- 1. 体积瘦身 (仅针对调试信息，不剔除任何硬件驱动) ---
           ./scripts/config --disable CONFIG_DEBUG_INFO \
                            --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
+                           --disable CONFIG_DEBUG_INFO_DWARF4 \
+                           --disable CONFIG_DEBUG_INFO_DWARF5 \
                            --disable CONFIG_DEBUG_FS \
-                           --disable CONFIG_WERROR \
-                           --disable CONFIG_GCC_PLUGINS
+                           --disable CONFIG_WERROR
           
-          # --- B. 开启 Surface 核心驱动 (全机型通用) ---
+          # --- 2. 补全 Surface 核心驱动 (确保一个不缺) ---
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
                            --enable CONFIG_SURFACE_AGGREGATOR_HUB \
+                           --enable CONFIG_SURFACE_HOTPLUG \
                            --enable CONFIG_HID_SURFACE_HID \
+                           --enable CONFIG_SURFACE_GPE \
                            --enable CONFIG_SURFACE_SAM
           
-          # --- C. 开启旧款 IPTS 驱动 (支持 Pro 4/5/6/7) ---
+          # --- 3. 补全触摸驱动链 (IPTS + ISH + 基础总线) ---
           ./scripts/config --enable CONFIG_VIDEO_IPTS \
                            --enable CONFIG_INTEL_IPTS \
-                           --enable CONFIG_HID_IPTS
-          
-          # --- D. 开启新款 ISH 驱动 (支持 Pro 8/9/10/Laptop) ---
-          ./scripts/config --enable CONFIG_INTEL_ISH_HID \
+                           --enable CONFIG_HID_IPTS \
+                           --enable CONFIG_INTEL_ISH_HID \
+                           --enable CONFIG_INTEL_ISH_FIRMWARE_DOWNLOADER \
                            --enable CONFIG_HID_SENSOR_HUB \
-                           --enable CONFIG_INTEL_VSEC
+                           --enable CONFIG_INTEL_VSEC \
+                           --enable CONFIG_I2C_HID_ACPI \
+                           --enable CONFIG_I2C_DESIGNWARE_PLATFORM
           
-          # --- E. 基础触控与 KernelSU ---
+          # --- 4. 基础 HID 与 KernelSU ---
           ./scripts/config --enable CONFIG_HID_MULTITOUCH \
                            --enable CONFIG_USB_HID \
                            --enable CONFIG_KSU
           
-          # --- F. 剔除无用驱动 (显卡只留 Intel) ---
-          ./scripts/config --disable CONFIG_DRM_AMDGPU \
-                           --disable CONFIG_DRM_RADEON \
-                           --disable CONFIG_DRM_NOUVEAU
-          
+          # 确保驱动全部作为内核内置或必需模块加载
           make olddefconfig
 
-      - name: 6. 编译并剥离符号 (Strip)
+      - name: 6. 编译并强制剥离符号 (Strip)
         working-directory: kernel-source
         run: |
           make bzImage -j$(nproc) KCFLAGS="-w"
-          # INSTALL_MOD_STRIP=1 移除模块内冗余数据
+          # 剥离模块符号是减小体积最安全的方法，不会影响功能
           make modules -j$(nproc) KCFLAGS="-w" INSTALL_MOD_STRIP=1
 
-      - name: 7. 获取最新 iptsd 并极简打包
+      - name: 7. 获取最新 iptsd 并打包
         run: |
           mkdir -p output/bin
-          # 下载 2026 最新版 iptsd (支持旧款 IPTS 与新款 ISH)
           wget github.com -O output/bin/iptsd
           chmod +x output/bin/iptsd
 
           if [ -f "kernel-source/arch/x86/boot/bzImage" ]; then
             cp kernel-source/arch/x86/boot/bzImage output/kernel
             cd kernel-source
-            # 剥离驱动模块中的调试信息
+            # 关键：INSTALL_MOD_STRIP=1 仅删除调试文本，不删除驱动代码
             make INSTALL_MOD_PATH=../output/modules_install INSTALL_MOD_STRIP=1 modules_install
             cd ../output
-            tar -czvf surface_universal_slim.tar.gz modules_install bin/iptsd
+            tar -czvf surface_stable_slim.tar.gz modules_install bin/iptsd
           else
-            echo "编译失败！"
+            echo "Build Failed"
             exit 1
           fi
 
-      - name: 8. 上传产物
+      - name: 8. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Universal-Slim-Kernel-2026
+          name: Surface-Stable-Slim-Kernel-2026
           path: |
             output/kernel
-            output/surface_universal_slim.tar.gz
+            output/surface_stable_slim.tar.gz
