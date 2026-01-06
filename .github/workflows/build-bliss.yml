@@ -1,48 +1,60 @@
 name: Build Zenith Kernel for Surface
 
 on:
-  workflow_dispatch: # 允许你在 GitHub 页面上手动点击 "Run workflow"
+  workflow_dispatch:
 
 jobs:
   build-kernel:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 拉取内核源码
+      - name: 1. 获取内核源码
         uses: actions/checkout@v4
         with:
           path: kernel-source
 
-      - name: 2. 安装 2026 编译必备环境
+      - name: 2. 安装编译工具
         run: |
           sudo apt update
-          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
+          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync wget unzip
 
-      - name: 3. 集成 KernelSU (暴力清理并重克隆)
+      - name: 3. 强制集成 KernelSU (绕过所有 Git 错误)
         run: |
-          cd kernel-source
-          # 强制清理旧残留，解决 File exists 报错
-          rm -rf drivers/kernelsu
+          # 进入目录
+          cd kernel-source/drivers
           
-          # 手动拉取源码
-          git clone --depth 1 github.com drivers/kernelsu
+          # 1. 暴力清理：无论之前是什么，全部删除
+          rm -rf kernelsu
           
-          # 检查克隆是否成功
-          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
-            echo "KernelSU 源码获取失败，请检查网络。"
-            exit 1
-          fi
+          # 2. 使用 wget 下载源码包 (不使用 git clone)
+          # 2026年 GitHub 稳定下载地址
+          wget github.com -O ksu.zip
+          
+          # 3. 解压并重命名
+          unzip ksu.zip
+          mv KernelSU-main kernelsu
+          rm ksu.zip
+          
+          # 4. 验证集成路径
+          if [ ! -f "kernelsu/Kconfig" ]; then echo "下载失败"; exit 1; fi
+          
+          # 5. 修补 Kconfig (回到 kernel-source 根目录)
+          cd ..
+          # 清除可能存在的坏引用，并添加新引用
+          sed -i '/kernelsu/d' drivers/Kconfig
+          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          
+          # 6. 修补 Makefile
+          sed -i '/kernelsu/d' drivers/Makefile
+          echo 'obj-y += kernelsu/' >> drivers/Makefile
 
-          # 自动插入引用 (带去重逻辑)
-          grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          grep -q "kernelsu/" drivers/Makefile || echo 'obj-y += kernelsu/' >> drivers/Makefile
-
-      - name: 4. 自动化内核配置
+      - name: 4. 配置并开启驱动
         working-directory: kernel-source
         run: |
-          # 生成基础配置
+          # 强制清理之前的任何配置残留
+          make mrproper
           make x86_64_defconfig
           
-          # 开启 Surface 驱动及 KernelSU
+          # 开启配置
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
@@ -52,30 +64,25 @@ jobs:
                            --enable CONFIG_SURFACE_SAM \
                            --enable CONFIG_KSU
           
-          # 2026 标准：同步并检查配置依赖
+          # 强制刷新
           make olddefconfig
 
-      - name: 5. 执行多线程编译
+      - name: 5. 编译内核
         working-directory: kernel-source
         run: |
-          # 使用所有可用 CPU 核心进行加速
           make bzImage -j$(nproc)
           make modules -j$(nproc)
 
-      - name: 6. 提取并打包编译产物
+      - name: 6. 打包产物
         run: |
           mkdir -p output/modules_install
-          # 拷贝内核镜像
           cp kernel-source/arch/x86/boot/bzImage output/kernel
-          # 拷贝驱动模块
           cd kernel-source
           make INSTALL_MOD_PATH=../output/modules_install modules_install
-          # 打包模块
-          cd ../output
-          tar -czvf surface_modules.tar.gz modules_install
+          cd ../output && tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 7. 发布产物
+      - name: 7. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Zenith-Kernel-With-KSU
+          name: Surface-Kernel-NoGitError
           path: output/
