@@ -10,23 +10,28 @@ jobs:
       - name: 1. 获取内核源码
         uses: actions/checkout@v4
         with:
-          path: kernel-source  # 将内核源码放在子目录，防止路径混淆
+          path: kernel-source
 
-      - name: 2. 获取 KernelSU 源码
+      - name: 2. 预创建 KernelSU 目标目录的父级
+        run: |
+          mkdir -p kernel-source/drivers # 确保父目录存在
+
+      - name: 3. 获取 KernelSU 源码
         uses: actions/checkout@v4
         with:
           repository: tiann/KernelSU
-          path: kernel-source/drivers/kernelsu # 直接检出到目标位置
+          path: kernel-source/drivers/kernelsu # 现在这个目录可以被正确创建了
 
-      - name: 3. 安装内核编译工具
+      - name: 4. 安装内核编译工具
+        # ... (保持不变) ...
         run: |
           sudo apt update
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: 4. 自动关联 KernelSU
+      - name: 5. 自动关联 KernelSU
+        # ... (保持不变) ...
         working-directory: kernel-source
         run: |
-          # 确保驱动层级引用了 KernelSU
           if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig; then
             echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           fi
@@ -34,7 +39,8 @@ jobs:
             echo 'obj-y += kernelsu/' >> drivers/Makefile
           fi
 
-      - name: 5. 配置并开启驱动
+      - name: 6. 配置并开启驱动
+        # ... (保持不变) ...
         working-directory: kernel-source
         run: |
           make x86_64_defconfig
@@ -48,13 +54,15 @@ jobs:
                            --enable CONFIG_KSU
           make olddefconfig
 
-      - name: 6. 编译内核
+      - name: 7. 编译内核
+        # ... (保持不变) ...
         working-directory: kernel-source
         run: |
           make bzImage -j$(nproc)
           make modules -j$(nproc)
 
-      - name: 7. 整理并打包产物
+      - name: 8. 整理产物
+        # ... (保持不变) ...
         working-directory: kernel-source
         run: |
           mkdir -p ../output/modules_install
@@ -62,7 +70,8 @@ jobs:
           make INSTALL_MOD_PATH=../output/modules_install modules_install
           cd ../output && tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 8. 上传产物
+      - name: 9. 上传产物
+        # ... (保持不变) ...
         uses: actions/upload-artifact@v4
         with:
           name: Surface-Zenith-Kernel-Package
