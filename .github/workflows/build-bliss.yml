@@ -1,3 +1,4 @@
+
 name: Build Zenith Kernel for Surface
 
 on:
@@ -22,7 +23,6 @@ jobs:
       - name: 3. 安装 2026 核心编译环境
         run: |
           sudo apt update
-          # 补全 ZSTD、BTF 及 LTO 编译链
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev \
           libncurses-dev rsync pahole llvm lld clang libzstd-dev lz4 wget tar llvm-dev
 
@@ -32,44 +32,53 @@ jobs:
           rm -rf drivers/kernelsu
           mkdir -p drivers/kernelsu
           cp -r ../ksu-src/kernel/* drivers/kernelsu/
-          # 强力去重并注入引用
           sed -i '/kernelsu/d' drivers/Kconfig
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
 
-      - name: 5. 暴力配置对齐 (修复 WERROR 报错)
+      - name: 5. 暴力配置对齐 (开启 Surface 全家桶驱动)
         working-directory: kernel-source
         run: |
           make mrproper
           make x86_64_defconfig
           
-          # 核心修复：禁用“将警告视为错误” (解决 intel.c:308 报错的关键)
+          # 核心修复：禁用报错
           ./scripts/config --disable CONFIG_WERROR
           
-          # 2026 链接优化：禁用导致链接崩溃的元数据校验
-          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF \
-                           --disable CONFIG_GCC_PLUGINS \
-                           --disable CONFIG_LTO_CLANG_FULL \
-                           --disable CONFIG_LTO_CLANG_THIN \
-                           --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
-          
-          # 开启 Surface & KernelSU 驱动
+          # 开启 Surface 核心驱动 (SAM/电池/键盘)
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
                            --enable CONFIG_SURFACE_HOTPLUG \
                            --enable CONFIG_HID_SURFACE_HID \
                            --enable CONFIG_SURFACE_GPE \
-                           --enable CONFIG_SURFACE_SAM \
-                           --enable CONFIG_KSU
+                           --enable CONFIG_SURFACE_SAM
+          
+          # 开启触摸屏 IPTSD 所需的内核支持 (IPTS & HID)
+          ./scripts/config --enable CONFIG_VIDEO_IPTS \
+                           --enable CONFIG_INTEL_IPTS \
+                           --enable CONFIG_HID_IPTS \
+                           --enable CONFIG_USB_HID \
+                           --enable CONFIG_HID_MULTITOUCH \
+                           --enable CONFIG_INTEL_ISH_HID \
+                           --enable CONFIG_INTEL_VSEC
+          
+          # 开启 KernelSU
+          ./scripts/config --enable CONFIG_KSU
+          
+          # 2026 链接优化
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF \
+                           --disable CONFIG_GCC_PLUGINS \
+                           --disable CONFIG_LTO_CLANG_FULL \
+                           --disable CONFIG_LTO_CLANG_THIN \
+                           --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
           
           make olddefconfig
 
-      - name: 6. 执行编译 (强制忽略所有警告)
+      - name: 6. 执行编译 (强制忽略警告)
         working-directory: kernel-source
         run: |
-          # KCFLAGS="-w" 告诉编译器忽略所有警告，只在真正代码错误时停止
           make bzImage -j$(nproc) KCFLAGS="-w" || make bzImage -j1 KCFLAGS="-w"
           make modules -j$(nproc) KCFLAGS="-w"
 
@@ -82,12 +91,12 @@ jobs:
             make INSTALL_MOD_PATH=../output/modules_install modules_install
             cd ../output && tar -czvf surface_modules.tar.gz modules_install
           else
-            echo "错误：内核生成失败，请检查编译日志。"
+            echo "错误：内核生成失败！"
             exit 1
           fi
 
       - name: 8. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Kernel-2026-Success
+          name: Surface-Kernel-Pro-All-Drivers-2026
           path: output/
