@@ -1,4 +1,3 @@
-
 name: Build Zenith Kernel for Surface
 
 on:
@@ -13,41 +12,50 @@ jobs:
         with:
           path: kernel-source
 
-      - name: 2. 检出 KernelSU 源码 (独立路径)
+      - name: 2. 检出 KernelSU 源码
         uses: actions/checkout@v4
         with:
           repository: tiann/KernelSU
           path: ksu-src
           fetch-depth: 1
 
-      - name: 3. 安装编译工具
+      - name: 3. 安装 2026 编译环境依赖
         run: |
           sudo apt update
-          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
+          # 增加了 pahole 和 llvm 基础包，防止现代内核编译中断
+          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync pahole llvm
 
-      - name: 4. 物理集成与修补 (核心修复步)
+      - name: 4. 物理集成与结构修补
         run: |
-          # 1. 强力清理内核源码中可能存在的残留
+          # 彻底清理残留
           rm -rf kernel-source/drivers/kernelsu
           
-          # 2. 将独立检出的 KSU 源码物理移动到内核驱动目录
-          mv ksu-src/kernel kernel-source/drivers/kernelsu
+          # 关键点：KernelSU 的代码在 ksu-src/kernel 子目录中
+          # 我们将其移动到内核树的 drivers/kernelsu
+          mkdir -p kernel-source/drivers/kernelsu
+          cp -r ksu-src/kernel/* kernel-source/drivers/kernelsu/
           
-          # 3. 修正 Kconfig/Makefile 引用
           cd kernel-source
+          # 强力修补 Kconfig (先删后加，防止重复导致 Error 2)
           sed -i '/kernelsu/d' drivers/Kconfig
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           
+          # 强力修补 Makefile
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
           
-          # 4. 验证文件
-          if [ ! -f "drivers/kernelsu/Kconfig" ]; then echo "错误：源码链接失败"; exit 1; fi
+          # 检查 Kconfig 物理文件是否存在
+          if [ ! -f "drivers/kernelsu/Kconfig" ]; then echo "KSU Kconfig missing!"; exit 1; fi
 
-      - name: 5. 配置并开启驱动
+      - name: 5. 配置并强制对齐 (Fix Error 2)
         working-directory: kernel-source
         run: |
+          # 1. 强制清理环境变量
+          make mrproper
+          # 2. 加载默认配置
           make x86_64_defconfig
+          
+          # 3. 启用 Surface & KernelSU 核心配置
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
@@ -55,16 +63,20 @@ jobs:
                            --enable CONFIG_HID_SURFACE_HID \
                            --enable CONFIG_SURFACE_GPE \
                            --enable CONFIG_SURFACE_SAM \
-                           --enable CONFIG_KSU
+                           --enable CONFIG_KSU \
+                           --disable CONFIG_DEBUG_INFO_BTF # 2026 提示：通常关闭 BTF 以防 pahole 版本冲突
+          
+          # 4. 关键：应用配置并自动补全所有缺失选项
           make olddefconfig
 
-      - name: 6. 编译内核
+      - name: 6. 编译内核与模块
         working-directory: kernel-source
         run: |
+          # 使用多线程编译，如果报错会显示具体位置
           make bzImage -j$(nproc)
           make modules -j$(nproc)
 
-      - name: 7. 打包产物
+      - name: 7. 整理并打包产物
         run: |
           mkdir -p output/modules_install
           cp kernel-source/arch/x86/boot/bzImage output/kernel
@@ -75,5 +87,5 @@ jobs:
       - name: 8. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Kernel-KSU-Final
+          name: Surface-Kernel-KSU-Final-2026
           path: output/
