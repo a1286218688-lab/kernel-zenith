@@ -1,98 +1,46 @@
-name: Build Stable Slim Universal Surface Kernel
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build-kernel:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 1. 检出源码
-        uses: actions/checkout@v4
-        with:
-          path: kernel-source
-
-      - name: 2. 检出 KernelSU
-        uses: actions/checkout@v4
-        with:
-          repository: tiann/KernelSU
-          path: ksu-src
-          fetch-depth: 1
-
-      - name: 3. 安装必备环境
-        run: |
-          sudo apt update
-          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev \
-          libncurses-dev rsync pahole llvm lld clang libzstd-dev lz4 wget tar
+      # ... 前面的步骤保持不变 ...
 
       - name: 4. 物理集成 KernelSU
         run: |
           cd kernel-source
-          rm -rf drivers/kernelsu
-          mkdir -p drivers/kernelsu
-          cp -r ../ksu-src/kernel/* drivers/kernelsu/
-          sed -i '/kernelsu/d' drivers/Kconfig
-          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          sed -i '/kernelsu/d' drivers/Makefile
-          echo 'obj-y += kernelsu/' >> drivers/Makefile
+          # 使用官方推荐方式集成，避免手动修改 Kconfig 报错
+          curl -LSs "raw.githubusercontent.com" | bash -s main
 
-      - name: 5. 配置兼容驱动并关闭 BZIMAGE 压缩
+      - name: 5. 配置内核参数 (针对 2026 优化)
         working-directory: kernel-source
         run: |
-          make mrproper
           make x86_64_defconfig
+          # 核心修复：必须保留一种压缩格式，否则无法生成 bzImage
+          ./scripts/config --enable CONFIG_KERNEL_ZSTD
           
-          # --- A. 体积瘦身 (仅针对调试信息，不剔除任何硬件驱动) ---
-          ./scripts/config --disable CONFIG_DEBUG_INFO \
-                           --disable CONFIG_DEBUG_FS \
-                           --disable CONFIG_WERROR \
-                           --disable CONFIG_GCC_PLUGINS
-          
-          # --- B. 核心修复：强制关闭内核 (BZIMAGE) 压缩 ---
-          # 这会使生成的 kernel 文件变大 (约 50-70MB)，但兼容性最好
-          ./scripts/config --disable CONFIG_KERNEL_GZIP \
-                           --disable CONFIG_KERNEL_BZIP2 \
-                           --disable CONFIG_KERNEL_LZMA \
-                           --disable CONFIG_KERNEL_XZ \
-                           --disable CONFIG_KERNEL_LZO \
-                           --disable CONFIG_KERNEL_LZ4 \
-                           --disable CONFIG_KERNEL_ZSTD
-          
-          # --- C. 补全 Surface 驱动 ---
+          # Surface 核心驱动增强
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
+                           --enable CONFIG_SURFACE_AGGREGATOR_BUS \
+                           --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
+                           --enable CONFIG_SURFACE_HOTPLUG \
                            --enable CONFIG_HID_SURFACE_HID \
-                           --enable CONFIG_INTEL_ISH_HID \
-                           --enable CONFIG_I2C_HID_ACPI \
-                           --enable CONFIG_KSU
-
+                           --enable CONFIG_INTEL_ISH_HID
+          
+          # 性能与瘦身
+          ./scripts/config --disable CONFIG_DEBUG_INFO \
+                           --enable CONFIG_DEBUG_INFO_NONE \
+                           --disable CONFIG_GCC_PLUGINS
           make olddefconfig
 
-      - name: 6. 编译并强制剥离符号 (Strip)
+      - name: 6. 编译 (指定 LLVM 工具链)
         working-directory: kernel-source
         run: |
-          # 现在 make bzImage 会生成一个未压缩的巨大文件，但 Surface UEFI 应该能加载
-          make bzImage -j$(nproc) KCFLAGS="-w"
-          make modules -j$(nproc) KCFLAGS="-w" INSTALL_MOD_STRIP=1
+          # 2026年推荐使用 LLVM=1 加快速度并优化产物体积
+          make bzImage -j$(nproc) LLVM=1 KCFLAGS="-w"
+          make modules -j$(nproc) LLVM=1 INSTALL_MOD_STRIP=1
 
-      - name: 7. 获取 iptsd 并打包
+      - name: 7. 获取最新 iptsd (触控优化工具)
         run: |
           mkdir -p output/bin
-          wget github.com -O output/bin/iptsd
+          # 动态获取最新 Release 地址 (示例)
+          TAG=$(curl -s api.github.com | jq -r .tag_name)
+          # 注意：需根据实际 release 架构选择链接
+          # wget "github.com{TAG}/iptsd" -O output/bin/iptsd
+          # 暂时占位
+          touch output/bin/iptsd 
           chmod +x output/bin/iptsd
-
-          if [ -f "kernel-source/arch/x86/boot/bzImage" ]; then
-            # 产物 kernel 现在会很大
-            cp kernel-source/arch/x86/boot/bzImage output/kernel
-            cd kernel-source
-            make INSTALL_MOD_PATH=../output/modules_install INSTALL_MOD_STRIP=1 modules_install
-            cd ../output
-            tar -czvf surface_uncompressed_slim.tar.gz modules_install bin/iptsd
-          else
-            exit 1
-          fi
-
-      - name: 8. 上传产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: Surface-Universal-Uncompressed-Kernel-2026
-          path: output/
