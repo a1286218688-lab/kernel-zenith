@@ -7,94 +7,88 @@ jobs:
   build-kernel:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 检出内核源码
+      - name: 1. 检出源码
         uses: actions/checkout@v4
         with:
           path: kernel-source
 
-      - name: 2. 检出 KernelSU 源码
+      - name: 2. 检出 KernelSU
         uses: actions/checkout@v4
         with:
           repository: tiann/KernelSU
           path: ksu-src
           fetch-depth: 1
 
-      - name: 3. 安装 2026 编译环境 (补全 ZSTD/BTF 依赖)
+      - name: 3. 增强版 2026 编译环境 (补全所有可能缺失的库)
         run: |
           sudo apt update
-          # 核心补丁：增加了 libzstd-dev, lz4, pahole 以解决链接阶段的 Error 2
+          # 额外增加了 libzstd-dev, libssl-dev, llvm, lld, clang 以及 rustc (防止内核开启了 Rust)
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev \
-          libncurses-dev rsync pahole llvm libzstd-dev lz4 wget tar
+          libncurses-dev rsync pahole llvm lld clang libzstd-dev lz4 wget tar llvm-dev rustc bindgen
 
       - name: 4. 物理集成 KernelSU
         run: |
-          rm -rf kernel-source/drivers/kernelsu
-          mkdir -p kernel-source/drivers/kernelsu
-          # 精准拷贝 KSU 内核部分，避免仓库杂质干扰
-          cp -r ksu-src/kernel/* kernel-source/drivers/kernelsu/
-          
           cd kernel-source
-          # 强力修补引用，防止 Makefile 逻辑死循环
+          rm -rf drivers/kernelsu
+          mkdir -p drivers/kernelsu
+          cp -r ../ksu-src/kernel/* drivers/kernelsu/
+          # 彻底清除重复引用并重新注入
           sed -i '/kernelsu/d' drivers/Kconfig
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
 
-      - name: 5. 配置并禁用冲突项 (解决 Error 2 关键)
+      - name: 5. 暴力配置对齐 (修复链接错误)
         working-directory: kernel-source
         run: |
           make mrproper
           make x86_64_defconfig
           
-          # 开启 Surface 核心驱动
+          # 开启 Surface & KernelSU
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
                            --enable CONFIG_SURFACE_HOTPLUG \
                            --enable CONFIG_HID_SURFACE_HID \
                            --enable CONFIG_SURFACE_GPE \
-                           --enable CONFIG_SURFACE_SAM
+                           --enable CONFIG_SURFACE_SAM \
+                           --enable CONFIG_KSU
           
-          # 开启 KernelSU
-          ./scripts/config --enable CONFIG_KSU
-          
-          # 修复链接阶段崩溃：禁用 BTF、GCC 插件以及不必要的调试信息
+          # 2026 关键修复项：禁用所有可能导致链接崩溃的元数据校验
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF \
                            --disable CONFIG_GCC_PLUGINS \
                            --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
-                           --disable CONFIG_DEBUG_INFO_DWARF4 \
-                           --disable CONFIG_DEBUG_INFO_DWARF5
+                           --disable CONFIG_RUST \
+                           --disable CONFIG_LTO_CLANG_FULL \
+                           --disable CONFIG_LTO_CLANG_THIN
           
-          # 强制应用配置并自动补全依赖
           make olddefconfig
 
-      - name: 6. 编译内核与驱动模块
+      - name: 6. 编译内核 (捕获详细错误)
         working-directory: kernel-source
         run: |
-          # 开始多线程编译
-          make bzImage -j$(nproc)
+          # 第一遍用多线程跑完大部分代码
+          make bzImage -j$(nproc) || \
+          (echo "!!! 多线程编译失败，正在切换单线程捕获具体错误 !!!" && make bzImage -j1)
+          
           make modules -j$(nproc)
 
-      - name: 7. 提取产物并打包
+      - name: 7. 打包产物
         run: |
-          mkdir -p output/modules_install
-          # 拷贝内核 bzImage
+          mkdir -p output
           if [ -f "kernel-source/arch/x86/boot/bzImage" ]; then
             cp kernel-source/arch/x86/boot/bzImage output/kernel
+            mkdir -p output/modules_install
+            cd kernel-source
+            make INSTALL_MOD_PATH=../output/modules_install modules_install
+            cd ../output && tar -czvf surface_modules.tar.gz modules_install
           else
-            echo "错误：内核镜像未生成！"
+            echo "错误：内核镜像生成失败，请查看上方日志中的具体 ld 报错"
             exit 1
           fi
-          
-          # 安装模块并压缩
-          cd kernel-source
-          make INSTALL_MOD_PATH=../output/modules_install modules_install
-          cd ../output
-          tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 8. 上传最终产物
+      - name: 8. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Zenith-Kernel-2026-Final
+          name: Surface-Zenith-Kernel-Final
           path: output/
