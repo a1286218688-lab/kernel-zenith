@@ -19,73 +19,82 @@ jobs:
           path: ksu-src
           fetch-depth: 1
 
-      - name: 3. 安装 2026 编译环境依赖
+      - name: 3. 安装 2026 编译环境 (补全 ZSTD/BTF 依赖)
         run: |
           sudo apt update
-          # 增加了 pahole 和 llvm 基础包，防止现代内核编译中断
-          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync pahole llvm
+          # 核心补丁：增加了 libzstd-dev, lz4, pahole 以解决链接阶段的 Error 2
+          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev \
+          libncurses-dev rsync pahole llvm libzstd-dev lz4 wget tar
 
-      - name: 4. 物理集成与结构修补
+      - name: 4. 物理集成 KernelSU
         run: |
-          # 彻底清理残留
           rm -rf kernel-source/drivers/kernelsu
-          
-          # 关键点：KernelSU 的代码在 ksu-src/kernel 子目录中
-          # 我们将其移动到内核树的 drivers/kernelsu
           mkdir -p kernel-source/drivers/kernelsu
+          # 精准拷贝 KSU 内核部分，避免仓库杂质干扰
           cp -r ksu-src/kernel/* kernel-source/drivers/kernelsu/
           
           cd kernel-source
-          # 强力修补 Kconfig (先删后加，防止重复导致 Error 2)
+          # 强力修补引用，防止 Makefile 逻辑死循环
           sed -i '/kernelsu/d' drivers/Kconfig
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           
-          # 强力修补 Makefile
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
-          
-          # 检查 Kconfig 物理文件是否存在
-          if [ ! -f "drivers/kernelsu/Kconfig" ]; then echo "KSU Kconfig missing!"; exit 1; fi
 
-      - name: 5. 配置并强制对齐 (Fix Error 2)
+      - name: 5. 配置并禁用冲突项 (解决 Error 2 关键)
         working-directory: kernel-source
         run: |
-          # 1. 强制清理环境变量
           make mrproper
-          # 2. 加载默认配置
           make x86_64_defconfig
           
-          # 3. 启用 Surface & KernelSU 核心配置
+          # 开启 Surface 核心驱动
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
                            --enable CONFIG_SURFACE_HOTPLUG \
                            --enable CONFIG_HID_SURFACE_HID \
                            --enable CONFIG_SURFACE_GPE \
-                           --enable CONFIG_SURFACE_SAM \
-                           --enable CONFIG_KSU \
-                           --disable CONFIG_DEBUG_INFO_BTF # 2026 提示：通常关闭 BTF 以防 pahole 版本冲突
+                           --enable CONFIG_SURFACE_SAM
           
-          # 4. 关键：应用配置并自动补全所有缺失选项
+          # 开启 KernelSU
+          ./scripts/config --enable CONFIG_KSU
+          
+          # 修复链接阶段崩溃：禁用 BTF、GCC 插件以及不必要的调试信息
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF \
+                           --disable CONFIG_GCC_PLUGINS \
+                           --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
+                           --disable CONFIG_DEBUG_INFO_DWARF4 \
+                           --disable CONFIG_DEBUG_INFO_DWARF5
+          
+          # 强制应用配置并自动补全依赖
           make olddefconfig
 
-      - name: 6. 编译内核与模块
+      - name: 6. 编译内核与驱动模块
         working-directory: kernel-source
         run: |
-          # 使用多线程编译，如果报错会显示具体位置
+          # 开始多线程编译
           make bzImage -j$(nproc)
           make modules -j$(nproc)
 
-      - name: 7. 整理并打包产物
+      - name: 7. 提取产物并打包
         run: |
           mkdir -p output/modules_install
-          cp kernel-source/arch/x86/boot/bzImage output/kernel
+          # 拷贝内核 bzImage
+          if [ -f "kernel-source/arch/x86/boot/bzImage" ]; then
+            cp kernel-source/arch/x86/boot/bzImage output/kernel
+          else
+            echo "错误：内核镜像未生成！"
+            exit 1
+          fi
+          
+          # 安装模块并压缩
           cd kernel-source
           make INSTALL_MOD_PATH=../output/modules_install modules_install
-          cd ../output && tar -czvf surface_modules.tar.gz modules_install
+          cd ../output
+          tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 8. 上传
+      - name: 8. 上传最终产物
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Kernel-KSU-Final-2026
+          name: Surface-Zenith-Kernel-2026-Final
           path: output/
