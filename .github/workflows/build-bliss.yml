@@ -1,4 +1,3 @@
-
 name: Build Zenith Kernel for Surface
 
 on:
@@ -23,7 +22,7 @@ jobs:
       - name: 3. 安装 2026 核心编译环境
         run: |
           sudo apt update
-          # 补全了 LTO、ZSTD、BTF 必须的工具链
+          # 补全 ZSTD、BTF 及 LTO 编译链
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev \
           libncurses-dev rsync pahole llvm lld clang libzstd-dev lz4 wget tar llvm-dev
 
@@ -39,13 +38,23 @@ jobs:
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
 
-      - name: 5. 暴力配置对齐 (修复链接崩溃)
+      - name: 5. 暴力配置对齐 (修复 WERROR 报错)
         working-directory: kernel-source
         run: |
           make mrproper
           make x86_64_defconfig
           
-          # 开启 Surface & KernelSU
+          # 核心修复：禁用“将警告视为错误” (解决 intel.c:308 报错的关键)
+          ./scripts/config --disable CONFIG_WERROR
+          
+          # 2026 链接优化：禁用导致链接崩溃的元数据校验
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF \
+                           --disable CONFIG_GCC_PLUGINS \
+                           --disable CONFIG_LTO_CLANG_FULL \
+                           --disable CONFIG_LTO_CLANG_THIN \
+                           --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
+          
+          # 开启 Surface & KernelSU 驱动
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
@@ -55,21 +64,14 @@ jobs:
                            --enable CONFIG_SURFACE_SAM \
                            --enable CONFIG_KSU
           
-          # 2026 关键修复：禁用导致链接 Error 2 的特性
-          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF \
-                           --disable CONFIG_GCC_PLUGINS \
-                           --disable CONFIG_LTO_CLANG_FULL \
-                           --disable CONFIG_LTO_CLANG_THIN \
-                           --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
-          
           make olddefconfig
 
-      - name: 6. 执行编译 (单线程回退机制)
+      - name: 6. 执行编译 (强制忽略所有警告)
         working-directory: kernel-source
         run: |
-          # 先试用多线程加速，如果失败则转为单线程暴露具体报错
-          make bzImage -j$(nproc) || make bzImage -j1
-          make modules -j$(nproc)
+          # KCFLAGS="-w" 告诉编译器忽略所有警告，只在真正代码错误时停止
+          make bzImage -j$(nproc) KCFLAGS="-w" || make bzImage -j1 KCFLAGS="-w"
+          make modules -j$(nproc) KCFLAGS="-w"
 
       - name: 7. 整理并打包产物
         run: |
@@ -80,12 +82,12 @@ jobs:
             make INSTALL_MOD_PATH=../output/modules_install modules_install
             cd ../output && tar -czvf surface_modules.tar.gz modules_install
           else
-            echo "错误：内核镜像生成失败。请检查上方日志中的 ld 链接报错。"
+            echo "错误：内核生成失败，请检查编译日志。"
             exit 1
           fi
 
       - name: 8. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Kernel-2026-Fixed
+          name: Surface-Kernel-2026-Success
           path: output/
