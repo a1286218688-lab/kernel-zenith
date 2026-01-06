@@ -1,0 +1,52 @@
+name: Build Zenith Kernel for Surface
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 获取当前仓库源码
+        uses: actions/checkout@v4 # 自动拉取你当前仓库的代码，不再需要 git clone 地址
+
+      - name: 2. 安装内核编译工具
+        run: |
+          sudo apt update
+          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
+
+      - name: 3. 配置并开启 Surface 驱动
+        run: |
+          # 因为已经 checkout，直接进入当前目录配置
+          make x86_64_defconfig
+          ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR
+          ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR_BUS
+          ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY
+          ./scripts/config --enable CONFIG_SURFACE_HOTPLUG
+          ./scripts/config --enable CONFIG_HID_SURFACE_HID
+          ./scripts/config --enable CONFIG_SURFACE_GPE
+          ./scripts/config --enable CONFIG_SURFACE_SAM
+
+      - name: 4. 开始多线程编译
+        run: |
+          # 编译内核
+          make bzImage -j$(nproc)
+          # 编译驱动模块
+          make modules -j$(nproc)
+
+      - name: 5. 整理并打包产物
+        run: |
+          mkdir -p output/modules_install
+          # 拷贝内核文件
+          cp arch/x86/boot/bzImage output/kernel
+          # 安装驱动模块
+          make INSTALL_MOD_PATH=output/modules_install modules_install
+          # 打包
+          cd output
+          tar -czvf surface_modules.tar.gz modules_install
+
+      - name: 6. 上传 Surface 专用内核
+        uses: actions/upload-artifact@v4
+        with:
+          name: Surface-Zenith-Kernel-Package
+          path: output/
