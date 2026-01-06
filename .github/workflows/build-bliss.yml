@@ -8,17 +8,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 1. 获取当前仓库源码
-        uses: actions/checkout@v4 # 自动拉取你当前仓库的代码，不再需要 git clone 地址
+        uses: actions/checkout@v4
 
       - name: 2. 安装内核编译工具
         run: |
           sudo apt update
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: 3. 配置并开启 Surface 驱动
+      - name: 3. 集成 KernelSU
         run: |
-          # 因为已经 checkout，直接进入当前目录配置
+          # 运行 KernelSU 官方集成脚本，修复 drivers/kernelsu/Kconfig 缺失问题
+          curl -LSs "raw.githubusercontent.com" | bash -
+
+      - name: 4. 配置并开启 Surface 驱动与 KernelSU
+        run: |
+          # 生成基础配置
           make x86_64_defconfig
+          
+          # 开启 Surface 相关驱动
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR_BUS
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY
@@ -26,26 +33,32 @@ jobs:
           ./scripts/config --enable CONFIG_HID_SURFACE_HID
           ./scripts/config --enable CONFIG_SURFACE_GPE
           ./scripts/config --enable CONFIG_SURFACE_SAM
+          
+          # 开启 KernelSU 支持
+          ./scripts/config --enable CONFIG_KSU
+          
+          # 应用修改后的配置
+          make olddefconfig
 
-      - name: 4. 开始多线程编译
+      - name: 5. 开始多线程编译
         run: |
-          # 编译内核
+          # 编译内核 bzImage
           make bzImage -j$(nproc)
           # 编译驱动模块
           make modules -j$(nproc)
 
-      - name: 5. 整理并打包产物
+      - name: 6. 整理并打包产物
         run: |
           mkdir -p output/modules_install
           # 拷贝内核文件
           cp arch/x86/boot/bzImage output/kernel
-          # 安装驱动模块
+          # 安装驱动模块到临时目录
           make INSTALL_MOD_PATH=output/modules_install modules_install
-          # 打包
+          # 打包模块文件
           cd output
           tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 6. 上传 Surface 专用内核
+      - name: 7. 上传 Surface 专用内核
         uses: actions/upload-artifact@v4
         with:
           name: Surface-Zenith-Kernel-Package
