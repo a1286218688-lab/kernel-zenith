@@ -1,5 +1,4 @@
-
-name: Build Stable Slim Surface Kernel
+name: Build Stable Slim Universal Surface Kernel
 
 on:
   workflow_dispatch:
@@ -37,78 +36,63 @@ jobs:
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
 
-      - name: 5. 核心驱动补全与体积瘦身 (修正版)
+      - name: 5. 配置兼容驱动并关闭 BZIMAGE 压缩
         working-directory: kernel-source
         run: |
           make mrproper
           make x86_64_defconfig
           
-          # --- 1. 体积瘦身 (仅针对调试信息，不剔除任何硬件驱动) ---
+          # --- A. 体积瘦身 (仅针对调试信息，不剔除任何硬件驱动) ---
           ./scripts/config --disable CONFIG_DEBUG_INFO \
-                           --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
-                           --disable CONFIG_DEBUG_INFO_DWARF4 \
-                           --disable CONFIG_DEBUG_INFO_DWARF5 \
                            --disable CONFIG_DEBUG_FS \
-                           --disable CONFIG_WERROR
+                           --disable CONFIG_WERROR \
+                           --disable CONFIG_GCC_PLUGINS
           
-          # --- 2. 补全 Surface 核心驱动 (确保一个不缺) ---
+          # --- B. 核心修复：强制关闭内核 (BZIMAGE) 压缩 ---
+          # 这会使生成的 kernel 文件变大 (约 50-70MB)，但兼容性最好
+          ./scripts/config --disable CONFIG_KERNEL_GZIP \
+                           --disable CONFIG_KERNEL_BZIP2 \
+                           --disable CONFIG_KERNEL_LZMA \
+                           --disable CONFIG_KERNEL_XZ \
+                           --disable CONFIG_KERNEL_LZO \
+                           --disable CONFIG_KERNEL_LZ4 \
+                           --disable CONFIG_KERNEL_ZSTD
+          
+          # --- C. 补全 Surface 驱动 ---
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
-                           --enable CONFIG_SURFACE_AGGREGATOR_BUS \
-                           --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
-                           --enable CONFIG_SURFACE_AGGREGATOR_HUB \
-                           --enable CONFIG_SURFACE_HOTPLUG \
                            --enable CONFIG_HID_SURFACE_HID \
-                           --enable CONFIG_SURFACE_GPE \
-                           --enable CONFIG_SURFACE_SAM
-          
-          # --- 3. 补全触摸驱动链 (IPTS + ISH + 基础总线) ---
-          ./scripts/config --enable CONFIG_VIDEO_IPTS \
-                           --enable CONFIG_INTEL_IPTS \
-                           --enable CONFIG_HID_IPTS \
                            --enable CONFIG_INTEL_ISH_HID \
-                           --enable CONFIG_INTEL_ISH_FIRMWARE_DOWNLOADER \
-                           --enable CONFIG_HID_SENSOR_HUB \
-                           --enable CONFIG_INTEL_VSEC \
                            --enable CONFIG_I2C_HID_ACPI \
-                           --enable CONFIG_I2C_DESIGNWARE_PLATFORM
-          
-          # --- 4. 基础 HID 与 KernelSU ---
-          ./scripts/config --enable CONFIG_HID_MULTITOUCH \
-                           --enable CONFIG_USB_HID \
                            --enable CONFIG_KSU
-          
-          # 确保驱动全部作为内核内置或必需模块加载
+
           make olddefconfig
 
       - name: 6. 编译并强制剥离符号 (Strip)
         working-directory: kernel-source
         run: |
+          # 现在 make bzImage 会生成一个未压缩的巨大文件，但 Surface UEFI 应该能加载
           make bzImage -j$(nproc) KCFLAGS="-w"
-          # 剥离模块符号是减小体积最安全的方法，不会影响功能
           make modules -j$(nproc) KCFLAGS="-w" INSTALL_MOD_STRIP=1
 
-      - name: 7. 获取最新 iptsd 并打包
+      - name: 7. 获取 iptsd 并打包
         run: |
           mkdir -p output/bin
           wget github.com -O output/bin/iptsd
           chmod +x output/bin/iptsd
 
           if [ -f "kernel-source/arch/x86/boot/bzImage" ]; then
+            # 产物 kernel 现在会很大
             cp kernel-source/arch/x86/boot/bzImage output/kernel
             cd kernel-source
-            # 关键：INSTALL_MOD_STRIP=1 仅删除调试文本，不删除驱动代码
             make INSTALL_MOD_PATH=../output/modules_install INSTALL_MOD_STRIP=1 modules_install
             cd ../output
-            tar -czvf surface_stable_slim.tar.gz modules_install bin/iptsd
+            tar -czvf surface_uncompressed_slim.tar.gz modules_install bin/iptsd
           else
-            echo "Build Failed"
             exit 1
           fi
 
-      - name: 8. 上传
+      - name: 8. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Stable-Slim-Kernel-2026
-          path: |
-            output/kernel
-            output/surface_stable_slim.tar.gz
+          name: Surface-Universal-Uncompressed-Kernel-2026
+          path: output/
