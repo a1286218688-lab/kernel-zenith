@@ -1,0 +1,63 @@
+
+name: Build Zenith Kernel for Surface
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 安装内核编译工具 (2026 修正版)
+        run: |
+          sudo apt update
+          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
+
+      - name: 2. 克隆 Zenith 内核源码 (HTTPS 修正)
+        run: |
+          # 确保包含完整的 https 协议头，防止 exit code 128 错误
+          git clone github.com -b zenith-14 --depth=1
+
+      - name: 3. 配置并开启 Surface 驱动选项
+        run: |
+          cd kernel-zenith
+          # 生成 x86_64 基础配置
+          make x86_64_defconfig
+          
+          # 强制开启 Surface 核心驱动（SAM, 触摸, 电池, 热键）
+          ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR
+          ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR_BUS
+          ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY
+          ./scripts/config --enable CONFIG_SURFACE_HOTPLUG
+          ./scripts/config --enable CONFIG_HID_SURFACE_HID
+          ./scripts/config --enable CONFIG_SURFACE_GPE
+          ./scripts/config --enable CONFIG_SURFACE_SAM
+          
+          # 验证配置是否生效
+          grep "CONFIG_SURFACE_AGGREGATOR=y" .config || echo "Warning: Config failed"
+
+      - name: 4. 开始多线程编译
+        run: |
+          cd kernel-zenith
+          # 编译内核镜像
+          make bzImage -j$(nproc)
+          # 编译驱动模块
+          make modules -j$(nproc)
+
+      - name: 5. 整理并打包产物
+        run: |
+          mkdir -p output/modules_install
+          # 核心内核文件
+          cp kernel-zenith/arch/x86/boot/bzImage output/kernel
+          
+          # 安装模块到临时目录并打包
+          cd kernel-zenith
+          make INSTALL_MOD_PATH=../output/modules_install modules_install
+          cd ../output
+          tar -czvf surface_modules.tar.gz modules_install
+
+      - name: 6. 上传 Surface 专用内核
+        uses: actions/upload-artifact@v4
+        with:
+          name: Surface-Zenith-Kernel-Package
+          path: output/
