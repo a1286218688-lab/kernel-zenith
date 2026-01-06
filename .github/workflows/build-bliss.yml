@@ -15,28 +15,39 @@ jobs:
           sudo apt update
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: 3. 手动集成 KernelSU (修复 HTML/Bash 报错)
+      - name: 3. 集成 KernelSU (标准克隆模式)
         run: |
-          # 删除可能存在的残留目录并重新克隆
+          # 清理旧目录
           rm -rf drivers/kernelsu
-          git clone github.com drivers/kernelsu
           
-          # 确保驱动层级引用了 KernelSU
-          # 如果 drivers/Kconfig 里没有引用，则添加
+          # 使用带有完整协议的 URL，并增加失败重试逻辑
+          git clone --depth 1 github.com drivers/kernelsu || \
+          (sleep 5 && git clone --depth 1 github.com drivers/kernelsu)
+
+          # 检查克隆是否成功
+          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
+            echo "错误: KernelSU 源码克隆失败，请检查网络。"
+            exit 1
+          fi
+
+          # 自动修补 Kconfig 引用
           if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig; then
             echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+            echo "已向 drivers/Kconfig 写入引用"
           fi
-          # 如果 drivers/Makefile 里没有引用，则添加
+          
+          # 自动修补 Makefile 引用
           if ! grep -q "kernelsu/" drivers/Makefile; then
             echo 'obj-y += kernelsu/' >> drivers/Makefile
+            echo "已向 drivers/Makefile 写入引用"
           fi
 
       - name: 4. 配置并开启 Surface 驱动与 KernelSU
         run: |
-          # 生成基础配置
+          # 1. 生成基础配置
           make x86_64_defconfig
           
-          # 开启 Surface 相关驱动
+          # 2. 启用 Surface 相关驱动
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR_BUS
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY
@@ -45,32 +56,28 @@ jobs:
           ./scripts/config --enable CONFIG_SURFACE_GPE
           ./scripts/config --enable CONFIG_SURFACE_SAM
           
-          # 开启 KernelSU 支持
+          # 3. 启用 KernelSU
           ./scripts/config --enable CONFIG_KSU
           
-          # 强制更新并检查依赖，避免配置失效
+          # 4. 应用修改并解决依赖
           make olddefconfig
 
-      - name: 5. 开始多线程编译
+      - name: 5. 多线程编译
         run: |
-          # 编译内核 bzImage
+          # 编译内核
           make bzImage -j$(nproc)
-          # 编译驱动模块
+          # 编译模块
           make modules -j$(nproc)
 
-      - name: 6. 整理并打包产物
+      - name: 6. 整理产物
         run: |
           mkdir -p output/modules_install
-          # 拷贝内核文件
           cp arch/x86/boot/bzImage output/kernel
-          # 安装驱动模块到临时目录
           make INSTALL_MOD_PATH=output/modules_install modules_install
-          # 打包模块文件
-          cd output
-          tar -czvf surface_modules.tar.gz modules_install
+          cd output && tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 7. 上传 Surface 专用内核
+      - name: 7. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Zenith-Kernel-Package
+          name: Surface-Zenith-Kernel-2026
           path: output/
