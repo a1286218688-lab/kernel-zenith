@@ -12,26 +12,23 @@ jobs:
         with:
           path: kernel-source
 
-      - name: 2. 预创建 KernelSU 目标目录的父级
-        run: |
-          mkdir -p kernel-source/drivers # 确保父目录存在
-
-      - name: 3. 获取 KernelSU 源码
-        uses: actions/checkout@v4
-        with:
-          repository: tiann/KernelSU
-          path: kernel-source/drivers/kernelsu # 现在这个目录可以被正确创建了
-
-      - name: 4. 安装内核编译工具
-        # ... (保持不变) ...
+      - name: 2. 安装内核编译工具
         run: |
           sudo apt update
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: 5. 自动关联 KernelSU
-        # ... (保持不变) ...
-        working-directory: kernel-source
+      - name: 3. 集成 KernelSU (手动创建目录并克隆)
+        # 放弃使用 checkout 插件的 path 属性，改用命令行以确保目录树正确生成
         run: |
+          cd kernel-source
+          mkdir -p drivers/kernelsu
+          # 使用 --depth 1 提高 2026 年网络环境下 Actions 的拉取成功率
+          git clone --depth 1 github.com drivers/kernelsu
+          
+          # 验证文件是否进入正确目录
+          if [ ! -f "drivers/kernelsu/Kconfig" ]; then echo "KernelSU 源码缺失"; exit 1; fi
+
+          # 自动修补引用
           if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig; then
             echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           fi
@@ -39,8 +36,7 @@ jobs:
             echo 'obj-y += kernelsu/' >> drivers/Makefile
           fi
 
-      - name: 6. 配置并开启驱动
-        # ... (保持不变) ...
+      - name: 4. 配置并开启驱动
         working-directory: kernel-source
         run: |
           make x86_64_defconfig
@@ -52,26 +48,24 @@ jobs:
                            --enable CONFIG_SURFACE_GPE \
                            --enable CONFIG_SURFACE_SAM \
                            --enable CONFIG_KSU
+          # 2026 编译规范：必须执行 olddefconfig 处理 Kconfig 变动
           make olddefconfig
 
-      - name: 7. 编译内核
-        # ... (保持不变) ...
+      - name: 5. 编译内核
         working-directory: kernel-source
         run: |
           make bzImage -j$(nproc)
           make modules -j$(nproc)
 
-      - name: 8. 整理产物
-        # ... (保持不变) ...
-        working-directory: kernel-source
+      - name: 6. 整理并打包产物
         run: |
-          mkdir -p ../output/modules_install
-          cp arch/x86/boot/bzImage ../output/kernel
+          mkdir -p output/modules_install
+          cp kernel-source/arch/x86/boot/bzImage output/kernel
+          cd kernel-source
           make INSTALL_MOD_PATH=../output/modules_install modules_install
           cd ../output && tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 9. 上传产物
-        # ... (保持不变) ...
+      - name: 7. 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: Surface-Zenith-Kernel-Package
