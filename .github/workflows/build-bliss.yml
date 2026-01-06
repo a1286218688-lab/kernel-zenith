@@ -1,4 +1,4 @@
-name: Build Zenith Kernel for Surface
+name: Build Slim Universal Surface Kernel
 
 on:
   workflow_dispatch:
@@ -19,11 +19,11 @@ jobs:
           path: ksu-src
           fetch-depth: 1
 
-      - name: 3. 安装 2026 编译环境
+      - name: 3. 安装必备环境
         run: |
           sudo apt update
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev \
-          libncurses-dev rsync pahole llvm lld clang libzstd-dev lz4 wget tar llvm-dev
+          libncurses-dev rsync pahole llvm lld clang libzstd-dev lz4 wget tar
 
       - name: 4. 物理集成 KernelSU
         run: |
@@ -36,71 +36,79 @@ jobs:
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
 
-      - name: 5. 配置 Surface 全驱动 (含最新 IPTS/ISH 触摸支持)
+      - name: 5. 配置全机型兼容驱动并瘦身
         working-directory: kernel-source
         run: |
           make mrproper
           make x86_64_defconfig
-          ./scripts/config --disable CONFIG_WERROR
           
-          # 开启 Surface 核心驱动
+          # --- A. 极致瘦身：禁用调试符号 (减小体积 90%) ---
+          ./scripts/config --disable CONFIG_DEBUG_INFO \
+                           --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
+                           --disable CONFIG_DEBUG_FS \
+                           --disable CONFIG_WERROR \
+                           --disable CONFIG_GCC_PLUGINS
+          
+          # --- B. 开启 Surface 核心驱动 (全机型通用) ---
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
-                           --enable CONFIG_SURFACE_HOTPLUG \
+                           --enable CONFIG_SURFACE_AGGREGATOR_HUB \
                            --enable CONFIG_HID_SURFACE_HID \
-                           --enable CONFIG_SURFACE_GPE \
                            --enable CONFIG_SURFACE_SAM
           
-          # 开启触摸屏内核通道 (IPTS & ISH)
+          # --- C. 开启旧款 IPTS 驱动 (支持 Pro 4/5/6/7) ---
           ./scripts/config --enable CONFIG_VIDEO_IPTS \
                            --enable CONFIG_INTEL_IPTS \
-                           --enable CONFIG_HID_IPTS \
-                           --enable CONFIG_USB_HID \
-                           --enable CONFIG_HID_MULTITOUCH \
-                           --enable CONFIG_INTEL_ISH_HID \
+                           --enable CONFIG_HID_IPTS
+          
+          # --- D. 开启新款 ISH 驱动 (支持 Pro 8/9/10/Laptop) ---
+          ./scripts/config --enable CONFIG_INTEL_ISH_HID \
+                           --enable CONFIG_HID_SENSOR_HUB \
                            --enable CONFIG_INTEL_VSEC
           
-          ./scripts/config --enable CONFIG_KSU
+          # --- E. 基础触控与 KernelSU ---
+          ./scripts/config --enable CONFIG_HID_MULTITOUCH \
+                           --enable CONFIG_USB_HID \
+                           --enable CONFIG_KSU
           
-          # 2026 链接优化
-          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF \
-                           --disable CONFIG_GCC_PLUGINS \
-                           --disable CONFIG_LTO_CLANG_FULL \
-                           --disable CONFIG_LTO_CLANG_THIN \
-                           --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
+          # --- F. 剔除无用驱动 (显卡只留 Intel) ---
+          ./scripts/config --disable CONFIG_DRM_AMDGPU \
+                           --disable CONFIG_DRM_RADEON \
+                           --disable CONFIG_DRM_NOUVEAU
           
           make olddefconfig
 
-      - name: 6. 执行多线程编译
+      - name: 6. 编译并剥离符号 (Strip)
         working-directory: kernel-source
         run: |
-          make bzImage -j$(nproc) KCFLAGS="-w" || make bzImage -j1 KCFLAGS="-w"
-          make modules -j$(nproc) KCFLAGS="-w"
+          make bzImage -j$(nproc) KCFLAGS="-w"
+          # INSTALL_MOD_STRIP=1 移除模块内冗余数据
+          make modules -j$(nproc) KCFLAGS="-w" INSTALL_MOD_STRIP=1
 
-      - name: 7. 获取最新 iptsd 并打包产物
+      - name: 7. 获取最新 iptsd 并极简打包
         run: |
           mkdir -p output/bin
-          # 自动获取 Linux-Surface 官方 2026 最新版 iptsd
-          # 我们尝试下载静态链接的二进制文件
-          wget github.com -O output/bin/iptsd || \
-          echo "Warning: iptsd download failed, you may need to compile it manually."
+          # 下载 2026 最新版 iptsd (支持旧款 IPTS 与新款 ISH)
+          wget github.com -O output/bin/iptsd
           chmod +x output/bin/iptsd
 
           if [ -f "kernel-source/arch/x86/boot/bzImage" ]; then
             cp kernel-source/arch/x86/boot/bzImage output/kernel
             cd kernel-source
-            make INSTALL_MOD_PATH=../output/modules_install modules_install
+            # 剥离驱动模块中的调试信息
+            make INSTALL_MOD_PATH=../output/modules_install INSTALL_MOD_STRIP=1 modules_install
             cd ../output
-            # 将 iptsd 一并存入压缩包
-            tar -czvf surface_full_package.tar.gz modules_install bin/iptsd
+            tar -czvf surface_universal_slim.tar.gz modules_install bin/iptsd
           else
-            echo "错误：内核生成失败！"
+            echo "编译失败！"
             exit 1
           fi
 
-      - name: 8. 上传
+      - name: 8. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Kernel-KSU-IPTSD-2026
-          path: output/
+          name: Surface-Universal-Slim-Kernel-2026
+          path: |
+            output/kernel
+            output/surface_universal_slim.tar.gz
