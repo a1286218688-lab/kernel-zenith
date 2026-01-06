@@ -13,11 +13,11 @@ jobs:
         with:
           path: kernel-source
 
-      - name: 2. 检出 KernelSU 源码 (官方链路)
+      - name: 2. 检出 KernelSU 源码 (独立路径)
         uses: actions/checkout@v4
         with:
           repository: tiann/KernelSU
-          path: kernel-source/drivers/kernelsu
+          path: ksu-src
           fetch-depth: 1
 
       - name: 3. 安装编译工具
@@ -25,45 +25,40 @@ jobs:
           sudo apt update
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: 4. 强制修补源码引用
+      - name: 4. 物理集成与修补 (核心修复步)
         run: |
+          # 1. 强力清理内核源码中可能存在的残留
+          rm -rf kernel-source/drivers/kernelsu
+          
+          # 2. 将独立检出的 KSU 源码物理移动到内核驱动目录
+          mv ksu-src/kernel kernel-source/drivers/kernelsu
+          
+          # 3. 修正 Kconfig/Makefile 引用
           cd kernel-source
-          # 移除之前可能产生的坏引用，确保 Kconfig 唯一
           sed -i '/kernelsu/d' drivers/Kconfig
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           
-          # 确保 Makefile 引用唯一
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
           
-          # 检查关键文件是否存在，防止空跑
-          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
-            echo "错误：KernelSU 源码未正确检出"
-            exit 1
-          fi
+          # 4. 验证文件
+          if [ ! -f "drivers/kernelsu/Kconfig" ]; then echo "错误：源码链接失败"; exit 1; fi
 
-      - name: 5. 配置内核与开启驱动
+      - name: 5. 配置并开启驱动
         working-directory: kernel-source
         run: |
-          # 清理并生成配置
           make x86_64_defconfig
-          
-          # 启用 Surface 相关驱动
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
                            --enable CONFIG_SURFACE_HOTPLUG \
                            --enable CONFIG_HID_SURFACE_HID \
                            --enable CONFIG_SURFACE_GPE \
-                           --enable CONFIG_SURFACE_SAM
-          
-          # 启用 KernelSU
-          ./scripts/config --enable CONFIG_KSU
-          
-          # 强制应用配置依赖
+                           --enable CONFIG_SURFACE_SAM \
+                           --enable CONFIG_KSU
           make olddefconfig
 
-      - name: 6. 编译内核及模块
+      - name: 6. 编译内核
         working-directory: kernel-source
         run: |
           make bzImage -j$(nproc)
@@ -77,8 +72,8 @@ jobs:
           make INSTALL_MOD_PATH=../output/modules_install modules_install
           cd ../output && tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 8. 上传产物
+      - name: 8. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Kernel-Zenith-KSU
+          name: Surface-Kernel-KSU-Final
           path: output/
