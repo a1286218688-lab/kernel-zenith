@@ -1,74 +1,50 @@
-
-name: Build BlissOS 17.2 Zenith Surface-Edition
+name: Build Zenith Kernel for Surface
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-kernel:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 强制清理所有系统预装 (腾出约 30GB)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true # 必须设为 true，默认的 Android SDK 太占空间
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap: true
-
-      - name: 2. 安装必要构建工具
+      - name: 安装内核编译工具
         run: |
           sudo apt update
-          sudo apt install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev \
-          gcc-multilib g++-multilib libc6-dev-i386 libncurses-dev \
-          x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
-          xsltproc unzip bc python3 libssl-dev rsync openjdk-17-jdk
+          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev
 
-      - name: 3. 极致精简同步源码
+      - name: 克隆 Zenith 内核源码
         run: |
-          mkdir -p ~/bin
-          curl raw.githubusercontent.com > ~/bin/repo
-          chmod a+x ~/bin/repo
-          export PATH=$HOME/bin:$PATH
+          # 仅克隆内核仓库，体积非常小
+          git clone github.com -b zenith-14 --depth=1
           
-          git config --global user.email "build@blissos.org"
-          git config --global user.name "BlissBuild"
-          
-          # 【核心优化】使用 -g 参数剔除不需要的仓库分组，大幅减少下载体积
-          repo init -u github.com -b v14 --depth=1 \
-            -g default,-notdefault,-darwin,-mips,-pdk,-arm,-exynos,-omap,-qcom,-mediatek
-          
-          # 【断点续传】只下载当前分支，不下载标签
-          echo "开始轻量化同步..."
-          repo sync -c -j4 --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
-          
-          # 检查同步结果
-          if [ ! -f "build/envsetup.sh" ]; then
-            echo "错误：空间可能仍不足，同步中断！"
-            df -h
-            exit 1
-          fi
-
-      - name: 4. 执行 Surface 版编译
+      - name: 配置并编译 Surface 内核驱动
         run: |
-          export PATH=$HOME/bin:$PATH
-          source build/envsetup.sh
+          cd kernel-zenith
+          # 使用默认配置
+          make x86_64_defconfig
           
-          # Surface 专用参数
-          export TARGET_KERNEL_USE=zenith
-          export TARGET_DEVICE_FEATURES=surface
-          export BOARD_USES_SURFACE_KERNEL=true
-          export BOARD_USES_IPTSD=true
+          # 强制开启 Surface 核心驱动
+          scripts/config --enable CONFIG_SURFACE_AGGREGATOR
+          scripts/config --enable CONFIG_SURFACE_AGGREGATOR_BUS
+          scripts/config --enable CONFIG_SURFACE_HOTPLUG
+          scripts/config --enable CONFIG_HID_SURFACE_HID
           
-          lunch bliss_x86_64-userdebug
-          
-          # 【减压构建】仅构建 ISO，限制并发数为 2，防止内存和空间瞬间溢出
-          mka iso_img -j2
+          # 开始编译 (只要 10-15 分钟)
+          make bzImage -j$(nproc)
+          make modules -j$(nproc)
 
-      - name: 5. 上传产物
+      - name: 打包产物
+        run: |
+          mkdir output
+          cp kernel-zenith/arch/x86/boot/bzImage output/kernel
+          # 压缩模块
+          cd kernel-zenith
+          make INSTALL_MOD_PATH=../output/modules_install modules_install
+          cd ../output
+          tar -czvf surface_modules.tar.gz modules_install
+
+      - name: 上传内核产物
         uses: actions/upload-artifact@v4
         with:
-          name: BlissOS-Surface-Zenith
-          path: out/target/product/x86_64/*.iso
+          name: Surface-Zenith-Kernel-Files
+          path: output/*
