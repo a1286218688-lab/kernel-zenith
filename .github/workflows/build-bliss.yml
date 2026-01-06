@@ -15,10 +15,21 @@ jobs:
           sudo apt update
           sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: 3. 集成 KernelSU
+      - name: 3. 手动集成 KernelSU (修复 HTML/Bash 报错)
         run: |
-          # 运行 KernelSU 官方集成脚本，修复 drivers/kernelsu/Kconfig 缺失问题
-          curl -LSs "raw.githubusercontent.com" | bash -
+          # 删除可能存在的残留目录并重新克隆
+          rm -rf drivers/kernelsu
+          git clone github.com drivers/kernelsu
+          
+          # 确保驱动层级引用了 KernelSU
+          # 如果 drivers/Kconfig 里没有引用，则添加
+          if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig; then
+            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          fi
+          # 如果 drivers/Makefile 里没有引用，则添加
+          if ! grep -q "kernelsu/" drivers/Makefile; then
+            echo 'obj-y += kernelsu/' >> drivers/Makefile
+          fi
 
       - name: 4. 配置并开启 Surface 驱动与 KernelSU
         run: |
@@ -37,7 +48,7 @@ jobs:
           # 开启 KernelSU 支持
           ./scripts/config --enable CONFIG_KSU
           
-          # 应用修改后的配置
+          # 强制更新并检查依赖，避免配置失效
           make olddefconfig
 
       - name: 5. 开始多线程编译
