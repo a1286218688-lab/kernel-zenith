@@ -1,0 +1,86 @@
+name: Build BlissOS 17.2 Zenith Surface-Edition
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 极限清理空间并移除旧记录
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          swap: true
+
+      - name: 安装基础环境
+        run: |
+          sudo apt update
+          sudo apt install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev \
+          gcc-multilib g++-multilib libc6-dev-i386 libncurses-dev \
+          x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
+          xsltproc unzip bc python3 libssl-dev rsync openjdk-17-jdk
+
+      - name: 彻底删除并重新初始化同步
+        run: |
+          # 清理可能存在的旧 bin 目录
+          rm -rf ~/bin && mkdir -p ~/bin
+          curl raw.githubusercontent.com > ~/bin/repo
+          chmod a+x ~/bin/repo
+          export PATH=$HOME/bin:$PATH
+          
+          git config --global user.email "build@blissos.org"
+          git config --global user.name "BlissBuild"
+          
+          # 强制删除可能残留的隐藏文件并重新开始
+          rm -rf .repo
+          
+          # 优先尝试 v14 官方 manifest
+          repo init -u github.com -b v14 --depth=1 || \
+          repo init -u github.com -b arcadia-x86 --depth=1
+          
+          # 强制断点续传同步，最多重试 3 次
+          sync_success=false
+          for i in {1..3}; do
+            echo "正在进行第 $i 次同步尝试..."
+            if repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags --fail-fast; then
+              sync_success=true
+              break
+            fi
+            echo "同步中断，正在清理并重试..."
+            sleep 5
+          done
+          
+          if [ "$sync_success" = false ]; then
+            echo "错误：源码同步连续 3 次失败，通常是磁盘空间已满。"
+            df -h
+            exit 1
+          fi
+
+      - name: 验证并执行编译
+        run: |
+          export PATH=$HOME/bin:$PATH
+          # 检查同步结果
+          if [ ! -f "build/envsetup.sh" ]; then
+            echo "致命错误：build/envsetup.sh 不存在，同步未成功！"
+            exit 1
+          fi
+          
+          source build/envsetup.sh
+          export TARGET_KERNEL_USE=zenith
+          export TARGET_DEVICE_FEATURES=surface
+          export BOARD_USES_SURFACE_KERNEL=true
+          export BOARD_USES_IPTSD=true
+          
+          lunch bliss_x86_64-userdebug
+          # 如果这里报错空间不足，请将 -j$(nproc) 改为 -j2 以降低消耗
+          mka iso_img -j$(nproc)
+
+      - name: 上传 ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlissOS-Surface-Edition
+          path: out/target/product/x86_64/*.iso
