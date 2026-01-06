@@ -1,3 +1,4 @@
+
 name: Build Zenith Kernel for Surface
 
 on:
@@ -7,18 +8,13 @@ jobs:
   build-kernel:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 安装内核编译工具
-        run: |
-          sudo apt update
-          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
+      - name: Install Tools
+        run: sudo apt update && sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: 2. 克隆内核源码 (强制地址格式)
-        run: |
-          # 2026年终极修复：使用变量组合地址，防止解析错误
-          export KERNEL_URL="github.com"
-          git clone ${KERNEL_URL} -b zenith-14 --depth=1 kernel-zenith
+      - name: Clone Source
+        run: git clone "github.com" --branch zenith-14 --depth 1 kernel-zenith
 
-      - name: 3. 配置并开启 Surface 驱动
+      - name: Configure Kernel
         run: |
           cd kernel-zenith
           make x86_64_defconfig
@@ -30,13 +26,13 @@ jobs:
           ./scripts/config --enable CONFIG_SURFACE_GPE
           ./scripts/config --enable CONFIG_SURFACE_SAM
 
-      - name: 4. 开始编译 (内核与模块)
+      - name: Build Kernel
         run: |
           cd kernel-zenith
           make bzImage -j$(nproc)
           make modules -j$(nproc)
 
-      - name: 5. 整理并打包产物
+      - name: Package
         run: |
           mkdir -p output/modules_install
           cp kernel-zenith/arch/x86/boot/bzImage output/kernel
@@ -45,7 +41,7 @@ jobs:
           cd ../output
           tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 6. 上传 Surface 内核包
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: Surface-Zenith-Kernel
