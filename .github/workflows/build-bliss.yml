@@ -1,3 +1,4 @@
+
 name: Build Zenith Kernel for Surface
 
 on:
@@ -7,73 +8,68 @@ jobs:
   build-kernel:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 获取内核源码
+      - name: 1. 检出内核源码
         uses: actions/checkout@v4
         with:
           path: kernel-source
 
-      - name: 2. 安装编译工具
+      - name: 2. 检出 KernelSU 源码 (官方链路)
+        uses: actions/checkout@v4
+        with:
+          repository: tiann/KernelSU
+          path: kernel-source/drivers/kernelsu
+          fetch-depth: 1
+
+      - name: 3. 安装编译工具
         run: |
           sudo apt update
-          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync wget unzip
+          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: 3. 强制集成 KernelSU (绕过所有 Git 错误)
+      - name: 4. 强制修补源码引用
         run: |
-          # 进入目录
-          cd kernel-source/drivers
-          
-          # 1. 暴力清理：无论之前是什么，全部删除
-          rm -rf kernelsu
-          
-          # 2. 使用 wget 下载源码包 (不使用 git clone)
-          # 2026年 GitHub 稳定下载地址
-          wget github.com -O ksu.zip
-          
-          # 3. 解压并重命名
-          unzip ksu.zip
-          mv KernelSU-main kernelsu
-          rm ksu.zip
-          
-          # 4. 验证集成路径
-          if [ ! -f "kernelsu/Kconfig" ]; then echo "下载失败"; exit 1; fi
-          
-          # 5. 修补 Kconfig (回到 kernel-source 根目录)
-          cd ..
-          # 清除可能存在的坏引用，并添加新引用
+          cd kernel-source
+          # 移除之前可能产生的坏引用，确保 Kconfig 唯一
           sed -i '/kernelsu/d' drivers/Kconfig
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           
-          # 6. 修补 Makefile
+          # 确保 Makefile 引用唯一
           sed -i '/kernelsu/d' drivers/Makefile
           echo 'obj-y += kernelsu/' >> drivers/Makefile
+          
+          # 检查关键文件是否存在，防止空跑
+          if [ ! -f "drivers/kernelsu/Kconfig" ]; then
+            echo "错误：KernelSU 源码未正确检出"
+            exit 1
+          fi
 
-      - name: 4. 配置并开启驱动
+      - name: 5. 配置内核与开启驱动
         working-directory: kernel-source
         run: |
-          # 强制清理之前的任何配置残留
-          make mrproper
+          # 清理并生成配置
           make x86_64_defconfig
           
-          # 开启配置
+          # 启用 Surface 相关驱动
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
                            --enable CONFIG_SURFACE_HOTPLUG \
                            --enable CONFIG_HID_SURFACE_HID \
                            --enable CONFIG_SURFACE_GPE \
-                           --enable CONFIG_SURFACE_SAM \
-                           --enable CONFIG_KSU
+                           --enable CONFIG_SURFACE_SAM
           
-          # 强制刷新
+          # 启用 KernelSU
+          ./scripts/config --enable CONFIG_KSU
+          
+          # 强制应用配置依赖
           make olddefconfig
 
-      - name: 5. 编译内核
+      - name: 6. 编译内核及模块
         working-directory: kernel-source
         run: |
           make bzImage -j$(nproc)
           make modules -j$(nproc)
 
-      - name: 6. 打包产物
+      - name: 7. 打包产物
         run: |
           mkdir -p output/modules_install
           cp kernel-source/arch/x86/boot/bzImage output/kernel
@@ -81,8 +77,8 @@ jobs:
           make INSTALL_MOD_PATH=../output/modules_install modules_install
           cd ../output && tar -czvf surface_modules.tar.gz modules_install
 
-      - name: 7. 上传
+      - name: 8. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: Surface-Kernel-NoGitError
+          name: Surface-Kernel-Zenith-KSU
           path: output/
