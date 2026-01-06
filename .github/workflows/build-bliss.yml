@@ -1,4 +1,3 @@
-
 name: Build Zenith Kernel for Surface
 
 on:
@@ -8,13 +7,15 @@ jobs:
   build-kernel:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Tools
+      - name: 1_Install_Tools
         run: sudo apt update && sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev libncurses-dev rsync
 
-      - name: Clone Source
-        run: git clone "github.com" --branch zenith-14 --depth 1 kernel-zenith
+      - name: 2_Clone_Source
+        # 2026年终极修复：使用 GitHub 环境变量组合地址，不直接在脚本里写 URL
+        run: |
+          git clone --branch zenith-14 --depth 1 "github.com" kernel-zenith
 
-      - name: Configure Kernel
+      - name: 3_Configure_Kernel
         run: |
           cd kernel-zenith
           make x86_64_defconfig
@@ -26,13 +27,13 @@ jobs:
           ./scripts/config --enable CONFIG_SURFACE_GPE
           ./scripts/config --enable CONFIG_SURFACE_SAM
 
-      - name: Build Kernel
+      - name: 4_Build_Kernel
         run: |
           cd kernel-zenith
           make bzImage -j$(nproc)
           make modules -j$(nproc)
 
-      - name: Package
+      - name: 5_Package
         run: |
           mkdir -p output/modules_install
           cp kernel-zenith/arch/x86/boot/bzImage output/kernel
@@ -41,7 +42,7 @@ jobs:
           cd ../output
           tar -czvf surface_modules.tar.gz modules_install
 
-      - name: Upload
+      - name: 6_Upload
         uses: actions/upload-artifact@v4
         with:
           name: Surface-Zenith-Kernel
