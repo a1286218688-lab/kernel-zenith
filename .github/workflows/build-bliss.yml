@@ -1,84 +1,44 @@
-name: Build Stable Surface Kernel 2026
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build-kernel:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 1. 检出内核源码
-        uses: actions/checkout@v4
-        with:
-          # 建议使用 github.com 源码以获得最佳触控支持
-          path: kernel-source
-
-      - name: 2. 安装 2026 必备环境
-        run: |
-          sudo apt update
-          sudo apt install -y git-core build-essential bc bison flex libssl-dev libelf-dev \
-          libncurses-dev rsync pahole llvm lld clang libzstd-dev lz4 wget tar jq
-
-      - name: 3. 集成 KernelSU (官方脚本模式)
-        run: |
-          cd kernel-source
-          curl -LSs "raw.githubusercontent.com" | bash -s main
-
-      - name: 4. 配置内核参数 (针对 Surface 优化)
+      - name: 5. 配置增强版 Surface 驱动与内核参数
         working-directory: kernel-source
         run: |
+          make mrproper
           make x86_64_defconfig
           
-          # --- A. 核心修复：必须保留 ZSTD 压缩以确保 EFI 能加载 ---
+          # --- 1. 核心修复：启用 ZSTD 压缩 (确保 EFI 兼容性) ---
           ./scripts/config --enable CONFIG_KERNEL_ZSTD
           
-          # --- B. Surface 关键驱动内置 (防止启动卡死) ---
+          # --- 2. 增强 Surface 核心驱动 (全部强制内置 =y) ---
+          # 基础总线支持
           ./scripts/config --enable CONFIG_SURFACE_AGGREGATOR \
                            --enable CONFIG_SURFACE_AGGREGATOR_BUS \
                            --enable CONFIG_SURFACE_AGGREGATOR_REGISTRY \
-                           --enable CONFIG_SURFACE_HOTPLUG \
-                           --enable CONFIG_HID_SURFACE_HID \
-                           --enable CONFIG_INTEL_ISH_HID \
-                           --enable CONFIG_I2C_HID_ACPI
+                           --enable CONFIG_SURFACE_AGGREGATOR_HUB \
+                           --enable CONFIG_SURFACE_HOTPLUG
           
-          # --- C. 启用 UEFI 与 KernelSU 支持 ---
-          ./scripts/config --enable CONFIG_EFI_STUB \
-                           --enable CONFIG_KSU \
-                           --disable CONFIG_DEBUG_INFO \
+          # 输入设备与触控 (IPTS/ITHC 依赖)
+          ./scripts/config --enable CONFIG_HID_SURFACE_HID \
+                           --enable CONFIG_INTEL_ISH_HID \
+                           --enable CONFIG_I2C_HID_ACPI \
+                           --enable CONFIG_SURFACE_HID_CORE
+          
+          # 电源与平台管理 (修复电量显示与睡眠)
+          ./scripts/config --enable CONFIG_SURFACE_GPE \
+                           --enable CONFIG_SURFACE_PLATFORM_FLAGS \
+                           --enable CONFIG_SURFACE_ACPI_NOTIFY \
+                           --enable CONFIG_SURFACE_DTX \
+                           --enable CONFIG_BATTERY_SURFACE
+          
+          # --- 3. 性能与体积优化 ---
+          ./scripts/config --disable CONFIG_DEBUG_INFO \
                            --enable CONFIG_DEBUG_INFO_NONE \
-                           --disable CONFIG_GCC_PLUGINS \
-                           --disable CONFIG_WERROR
+                           --disable CONFIG_DEBUG_FS \
+                           --disable CONFIG_WERROR \
+                           --disable CONFIG_GCC_PLUGINS
+          
+          # --- 4. 功能性增强 (UEFI Stub & KernelSU) ---
+          ./scripts/config --enable CONFIG_EFI_STUB \
+                           --enable CONFIG_EFI_MIXED \
+                           --enable CONFIG_KSU \
+                           --enable CONFIG_BLK_DEV_NVME
 
           make olddefconfig
-
-      - name: 5. 执行编译 (LLVM 19/20 工具链)
-        working-directory: kernel-source
-        run: |
-          # 使用 LLVM 编译可获得更好的 Surface 固件兼容性
-          make bzImage -j$(nproc) LLVM=1 KCFLAGS="-w"
-          make modules -j$(nproc) LLVM=1 INSTALL_MOD_STRIP=1
-
-      - name: 6. 获取 iptsd 并准备产物
-        run: |
-          mkdir -p output/bin
-          # 获取 linux-surface 团队提供的最新 iptsd 二进制文件
-          TAG=$(curl -s api.github.com | jq -r .tag_name)
-          wget "github.com{TAG}/iptsd" -O output/bin/iptsd || touch output/bin/iptsd
-          chmod +x output/bin/iptsd
-
-          if [ -f "kernel-source/arch/x86/boot/bzImage" ]; then
-            cp kernel-source/arch/x86/boot/bzImage output/kernel
-            cd kernel-source
-            make INSTALL_MOD_PATH=../output/modules_install INSTALL_MOD_STRIP=1 LLVM=1 modules_install
-            cd ../output
-            tar -czvf surface_kernel_pack_2026.tar.gz modules_install bin/
-          else
-            echo "Error: bzImage not found!"
-            exit 1
-          fi
-
-      - name: 7. 上传内核
-        uses: actions/upload-artifact@v4
-        with:
-          name: Surface-Kernel-ZSTD-KSU-2026
-          path: output/
